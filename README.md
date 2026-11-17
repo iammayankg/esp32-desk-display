@@ -37,9 +37,58 @@ The clock and agenda alternate every 5 seconds. The BOOT button does the rest:
 
 ## Setup
 
-You need the board flashed with MicroPython for the ESP32-S3 (built with v1.25.0,
-the `ESP32_GENERIC_S3` 4 MB flash build) and
-[mpremote](https://docs.micropython.org/en/latest/reference/mpremote.html) on the Mac.
+### 1. Flash MicroPython
+
+This replaces the firmware the board shipped with. You need
+[esptool](https://docs.espressif.com/projects/esptool/) and
+[mpremote](https://docs.micropython.org/en/latest/reference/mpremote.html):
+
+```bash
+pip install esptool mpremote
+```
+
+1. Download the MicroPython firmware for the board from
+   [micropython.org/download/ESP32_GENERIC_S3](https://micropython.org/download/ESP32_GENERIC_S3/).
+   Pick the **4 MB flash** variant (`ESP32_GENERIC_S3-FLASH_4M-...bin`); this
+   project was built on v1.25.0.
+2. Plug the board in and find its port:
+
+   ```bash
+   ls /dev/cu.usbmodem*
+   ```
+
+   If esptool cannot connect in the steps below, put the board in download mode:
+   hold BOOT, press and release the reset button, then release BOOT.
+3. Optional but recommended: back up what is on the board now, so you can go back.
+
+   ```bash
+   esptool --port /dev/cu.usbmodemXXXX read-flash 0 0x400000 original-flash.bin
+   ```
+
+4. Erase the flash and write MicroPython at address 0:
+
+   ```bash
+   esptool --port /dev/cu.usbmodemXXXX erase-flash
+   ```
+
+   ```bash
+   esptool --port /dev/cu.usbmodemXXXX write-flash 0 ESP32_GENERIC_S3-FLASH_4M-20250415-v1.25.0.bin
+   ```
+
+5. Press the reset button. The port name may change after this, so list the
+   ports again. Check that MicroPython answers:
+
+   ```bash
+   mpremote exec "import sys; print(sys.version)"
+   ```
+
+To restore the backup later, write it back the same way:
+`esptool --port /dev/cu.usbmodemXXXX write-flash 0 original-flash.bin`.
+
+The command names above are for esptool v5. Older versions use `esptool.py` with
+underscores (`read_flash`, `erase_flash`, `write_flash`).
+
+### 2. Install the display
 
 1. Copy `wifi_config.example.py` to `wifi_config.py` and fill in your Wi-Fi name,
    password, time zone and, if you want the agenda, your calendar's iCal link.
