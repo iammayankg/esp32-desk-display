@@ -4,6 +4,16 @@ A small desk display built on the Spotpear ESP32-S3-0.96-SD board (ESP32-S3 with
 a 160x80 colour LCD), written in MicroPython. It shows the time, your next
 calendar events, a pomodoro timer and your Mac's vitals.
 
+| Clock | Next events | Event in progress |
+| --- | --- | --- |
+| ![Clock screen](images/clock.png) | ![Agenda screen](images/agenda.png) | ![Event in progress](images/ongoing.png) |
+
+| Pomodoro | Mac vitals |
+| --- | --- |
+| ![Pomodoro screen](images/pomodoro.png) | ![Vitals screen](images/vitals.png) |
+
+These are captures of the board's 160x80 screen, enlarged three times, with sample data.
+
 ## Screens
 
 | Screen | What it shows |
