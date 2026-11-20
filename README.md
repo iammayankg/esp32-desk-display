@@ -2,7 +2,7 @@
 
 A small desk display built on the Spotpear ESP32-S3-0.96-SD board (ESP32-S3 with
 a 160x80 colour LCD), written in MicroPython. It shows the time, your next
-calendar events, a pomodoro timer and your Mac's vitals.
+calendar events, a pomodoro timer and your Mac's vitals, and it has a face.
 
 | Clock | Next events | Event in progress |
 | --- | --- | --- |
@@ -28,6 +28,38 @@ The clock and agenda alternate every 5 seconds. The BOOT button does the rest:
 - **Short press:** clock/agenda → pomodoro → vitals → clock.
 - **Long press** on the pomodoro: start or pause. Hold 2.5 seconds to reset.
 - **Long press** on the clock or agenda: sync time and calendar now.
+
+## The face
+
+The display has a pair of eyes with a mood, so it reacts to what is going on
+instead of only showing it.
+
+![The face on each screen](images/face-on-screens.png)
+
+- **Clock:** the colon is the eyes. It blinks and takes the mood's colour.
+- **Agenda, pomodoro, vitals:** a small pair of eyes sits in a corner, blinking and
+  glancing around. Pressing the button makes it wink.
+- **Pop-ups:** the full face takes the screen for a few seconds when something
+  happens, then hands it back. Any button press dismisses it.
+
+![Pop-up reactions](images/face-popups.png)
+
+| Mood | When | Look |
+| --- | --- | --- |
+| Stressed | Mac CPU at 85% or more | Red, trembling |
+| Slack | Unread messages | Yellow |
+| Focus | Pomodoro focus running | Red, narrowed |
+| Break | Pomodoro break running | Blue, happy |
+| Asleep | 11 pm to 7 am | Dim, closed |
+
+| Pop-up | Trigger |
+| --- | --- |
+| "hello!" | Power-on |
+| "3 unread" | A new Slack message |
+| "in 5 min" + event title | A timed event is five minutes away |
+| "break time!" / "next round?" | A pomodoro focus or break ends |
+| "Mac connected" / "Mac?" | `mac_vitals.py` connects or goes quiet |
+| "no Wi-Fi" | Time sync fails (once per outage) |
 
 ## How it gets its data
 

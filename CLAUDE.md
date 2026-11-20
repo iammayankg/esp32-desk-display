@@ -34,6 +34,20 @@ events). A short press steps clock/agenda -> pomodoro -> vitals.
 - Pomodoro: 25/5 timer; long press starts/pauses, 2.5 s hold resets.
 - Vitals: the Mac's CPU, memory and network.
 
+## The face
+
+A pair of eyes with a mood (`face_mood()`: stressed, slack, focus, break, sleepy,
+idle). It appears three ways, all in the "The face" section of `main.py`:
+
+- `react(mood, caption, ms, line2)` pops the full face over any screen for a
+  moment. Triggers live where the event happens (`handle_line`, `note_wifi`,
+  `announce_event`, the main loop).
+- `companion_spot()` places a 24x12 pair of small eyes on the agenda, pomodoro
+  and vitals screens. `show()` paints them into every full frame;
+  `companion_frame()` animates them with a partial refresh (`show_region`).
+  Keep that box clear when changing those layouts.
+- The clock's colon blinks and takes the mood's colour (`draw_clock`).
+
 ## Design rules
 
 - One cooperative main loop with a 10 ms sleep. Nothing may block: Wi-Fi, NTP and

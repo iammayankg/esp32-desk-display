@@ -3,6 +3,7 @@
 #
 # Screens. The clock and agenda alternate by themselves every few seconds; a
 # short press of the BOOT button (GPIO0) steps clock/agenda -> pomodoro -> vitals.
+# A pair of eyes gives it a mood: see "The face" below.
 #   clock     - HH:MM and "Mon 16 Nov" over a dim digital-rain backdrop; time from
 #               NTP over Wi-Fi (wifi_config.py), or from the Mac over USB
 #               (mac_vitals.py) whenever the Wi-Fi sync is not working
@@ -58,6 +59,7 @@ def rgb(r, g, b):
 BLACK = rgb(0, 0, 0)
 FG = rgb(0, 255, 160)
 DIM = rgb(0, 40, 26)
+DIM_FG = rgb(0, 120, 76)
 TEXT = rgb(200, 200, 200)
 WARN = rgb(255, 80, 60)
 STATUS = rgb(110, 110, 110)
@@ -118,7 +120,22 @@ def lcd_init():
     cmd(0x29)
 
 
+def show_region(x, y, w, h):
+    # Send just one rectangle of the frame buffer to the panel.
+    cmd(0x2A, [0, OFF_X + x, 0, OFF_X + x + w - 1])
+    cmd(0x2B, [0, OFF_Y + y, 0, OFF_Y + y + h - 1])
+    cmd(0x2C)
+    cs(0)
+    dc(1)
+    mv = memoryview(buf)
+    for row in range(y, y + h):
+        o = (row * W + x) * 2
+        spi.write(mv[o:o + w * 2])
+    cs(1)
+
+
 def show():
+    paint_companion(time.ticks_ms())    # the little eyes ride along on every full frame
     cmd(0x2A, [0, OFF_X, 0, OFF_X + W - 1])
     cmd(0x2B, [0, OFF_Y, 0, OFF_Y + H - 1])
     cmd(0x2C)
@@ -210,9 +227,15 @@ def draw_clock(t):
     for n in (hour // 10, hour % 10):
         digit(x, y, n, CLOCK_FG, None, CLOCK_W, CLOCK_H, CLOCK_T, True)
         x += step
-    for cy in (y + 12, y + 30):                  # colon
+    # The colon doubles as a pair of eyes: it blinks, winks and takes the mood's colour.
+    now_ms = time.ticks_ms()
+    mood = face_mood()
+    eye_color = CLOCK_FG if mood == "idle" else mood_color(mood)
+    eye_h = 2 if mood == "sleepy" else max(2, int(CLOCK_T * face_openness(now_ms, 240) + 0.5))
+    for i, cy in enumerate((y + 12, y + 30)):
+        eh = 2 if i and face_until(face_wink_until) else eye_h
         fb.fill_rect(x - 2, cy - 2, CLOCK_T + 4, CLOCK_T + 4, BLACK)
-        fb.fill_rect(x, cy, CLOCK_T, CLOCK_T, CLOCK_FG)
+        fb.fill_rect(x, cy + (CLOCK_T - eh) // 2, CLOCK_T, eh, eye_color)
     x += CLOCK_T + 6
     for n in (minute // 10, minute % 10):
         digit(x, y, n, CLOCK_FG, None, CLOCK_W, CLOCK_H, CLOCK_T, True)
@@ -465,14 +488,18 @@ def handle_line(line):
     except ValueError:
         return False
     if parts[0] == "S":                 # S <unread count, -1 = Slack not open> <mention 0/1>
+        before = slack_unread()
         slack = v
         slack_at = time.ticks_ms()
+        if v[0] > (before[0] if before else 0):
+            react("slack")              # something new arrived
         return False
     if parts[0] == "T":                 # T <year> <month> <day> <hour> <min> <sec>, Mac local time
         set_from_mac(v)
         return False
     if vitals is None or vitals_fresh() is False:
         print("vitals: link up")
+        react("hello", "Mac connected")
     vitals = v
     vitals_at = time.ticks_ms()
     cpu_hist[:-1] = cpu_hist[1:]
@@ -551,9 +578,9 @@ def draw_vitals():
         return
     cpu, mem, bat, charging, down, up = vitals
     fb.text("CPU%4d%%" % cpu, 2, 2, TEXT)
-    bar(72, 2, 86, 8, cpu / 100, load_color(cpu))
+    bar(72, 2, 60, 8, cpu / 100, load_color(cpu))       # the eyes sit right of the bars
     fb.text("MEM%4d%%" % mem, 2, 15, TEXT)
-    bar(72, 15, 86, 8, mem / 100, load_color(mem))
+    bar(72, 15, 60, 8, mem / 100, load_color(mem))
     fb.text("DN %-6s UP %s" % (rate(down), rate(up)), 2, 28, TEXT)
     if bat >= 0:
         fb.text("BAT%4d%%%s" % (bat, " chg" if charging else ""), 2, 41, TEXT)
@@ -684,9 +711,23 @@ def schedule(seconds):
     next_attempt = time.ticks_add(time.ticks_ms(), seconds * 1000)
 
 
+wifi_complained = False
+
+
+def note_wifi(ok):
+    # Record how the latest time sync went; the face complains once per outage.
+    global wifi_time_ok, wifi_complained
+    wifi_time_ok = ok
+    if ok:
+        wifi_complained = False
+    elif not wifi_complained:
+        wifi_complained = True
+        react("confused", "no Wi-Fi")
+
+
 def sync_step():
     # Called from the main loop; never blocks for more than about a second.
-    global sync_state, status, connect_started, wifi_time_ok
+    global sync_state, status, connect_started
     if cfg is None:
         return
     if sync_state == "fetching":
@@ -700,7 +741,7 @@ def sync_step():
             wlan.connect(cfg.SSID, cfg.PASSWORD)
         except OSError:
             status = "wifi: error"
-            wifi_time_ok = False
+            note_wifi(False)
             wifi_off()
             schedule(RETRY_S)
             return
@@ -719,10 +760,10 @@ def sync_step():
                 status = "synced %02d:%02d" % (tm[3], tm[4])
                 print("clock: NTP sync ok")
                 synced = True
-                wifi_time_ok = True
+                note_wifi(True)
             except Exception as e:
                 print("clock: NTP failed:", e)
-                wifi_time_ok = False
+                note_wifi(False)
                 if not status.startswith("synced"):
                     status = "ntp: failed"
                 synced = False
@@ -733,7 +774,7 @@ def sync_step():
                 schedule(RESYNC_S if synced else RETRY_S)
         elif time.ticks_diff(time.ticks_ms(), connect_started) > CONNECT_TIMEOUT_S * 1000:
             print("clock: wifi connect timed out, status", wlan.status())
-            wifi_time_ok = False
+            note_wifi(False)
             if not status.startswith("synced"):
                 status = "wifi: no connection"
             wifi_off()
@@ -819,6 +860,266 @@ class Button:
         return None
 
 
+# ---- The face ---------------------------------------------------------------
+# The display has a pair of eyes with a mood. They show up three ways:
+#   - full screen for a couple of seconds when something happens (react())
+#   - as a small pair in a corner of the agenda, pomodoro and vitals screens
+#   - as the clock's colon, which blinks and changes colour
+# The mood follows what is going on: stressed when the Mac's CPU is pegged, yellow
+# when Slack has unread messages, narrowed during a pomodoro focus, happy on a
+# break, asleep at night.
+
+FACE_FRAME_MS = 40
+EYE_W, EYE_H, EYE_R = 34, 38, 8
+EYE_Y = 32                          # vertical centre of the eyes
+EYE_DX = 32                         # each eye's centre, left and right of the middle
+SWEAT = rgb(90, 190, 255)
+MINI_W, MINI_H = 24, 12             # box the small eyes are drawn in
+
+face_gaze = [0.0, 0.0]              # where the eyes point now, pixels off centre
+face_target = [0, 0]
+face_look_at = 0                    # tick of the next glance
+face_blink_at = 0                   # tick of the next blink
+face_blink_start = None
+face_wink_until = None
+face_react = ("idle", "", "")       # (mood, caption, second line) of the pop-up
+face_react_until = None
+face_tick = 0
+event_announced = None
+
+
+def face_until(deadline):
+    # True while `deadline` (a tick, or None) is still in the future.
+    return deadline is not None and time.ticks_diff(deadline, time.ticks_ms()) > 0
+
+
+def react(mood, caption=None, ms=2200, line2=""):
+    # Pop the face up over whatever screen is showing.
+    global face_react, face_react_until, face_blink_start
+    face_react = (mood, caption, line2)
+    face_react_until = time.ticks_add(time.ticks_ms(), ms)
+    face_blink_start = None
+
+
+def reacting():
+    return face_until(face_react_until)
+
+
+def face_mood():
+    if vitals_fresh() and vitals[0] >= 85:
+        return "stressed"
+    if slack_unread():
+        return "slack"
+    if pomo.running:
+        return "break" if pomo.on_break else "focus"
+    t = time.localtime()
+    if t[0] >= 2024 and (t[3] >= 23 or t[3] < 7):
+        return "sleepy"
+    return "idle"
+
+
+def mood_color(mood):
+    if mood == "stressed":
+        return WARN
+    if mood == "slack":
+        return SLACK
+    if mood == "focus":
+        return FOCUS
+    if mood == "break":
+        return BREAK
+    if mood == "alert":
+        return AMBER
+    if mood == "sleepy":
+        return DIM_FG
+    return FG
+
+
+def face_openness(now, blink_ms):
+    # 1.0 = eyes open; dips to 0 and back during a blink.
+    global face_blink_at, face_blink_start
+    if face_blink_start is None:
+        if time.ticks_diff(now, face_blink_at) < 0:
+            return 1.0
+        face_blink_start = now
+    p = time.ticks_diff(now, face_blink_start) / blink_ms
+    if p >= 1:
+        face_blink_start = None
+        # Now and then blink twice in a row.
+        gap = 250 if random.getrandbits(3) == 0 else random.randint(1500, 5000)
+        face_blink_at = time.ticks_add(now, gap)
+        return 1.0
+    return abs(1 - 2 * p)
+
+
+def face_glance(now):
+    # Drift towards the current target; pick a new one every second or three.
+    global face_look_at
+    if time.ticks_diff(now, face_look_at) >= 0:
+        face_look_at = time.ticks_add(now, random.randint(900, 3000))
+        if random.getrandbits(1):
+            face_target[0], face_target[1] = 0, 0
+        else:
+            face_target[0], face_target[1] = random.randint(-11, 11), random.randint(-5, 5)
+    for i in (0, 1):
+        face_gaze[i] += (face_target[i] - face_gaze[i]) * 0.3
+
+
+def eye(cx, cy, w, h, color):
+    # A rounded block centred on (cx, cy).
+    h = max(h, 4)
+    r = min(EYE_R, h // 2, w // 2)
+    x, y = cx - w // 2, cy - h // 2
+    fb.fill_rect(x + r, y, w - 2 * r, h, color)
+    fb.fill_rect(x, y + r, w, h - 2 * r, color)
+    if r > 1:
+        for ex in (x + r, x + w - r - 1):
+            for ey in (y + r, y + h - r - 1):
+                fb.ellipse(ex, ey, r, r, color, True)
+
+
+def draw_face(now):
+    # The full-screen face, in the mood of the current pop-up.
+    global face_tick
+    face_tick += 1
+    mood, caption, line2 = face_react if reacting() else (face_mood(), None, "")
+    face_glance(now)
+    opened = face_openness(now, 240)
+    gx, gy = int(face_gaze[0]), int(face_gaze[1])
+    color, w, h, auto = mood_color(mood), EYE_W, EYE_H, ""
+    happy = mood in ("hello", "break")
+    unread = slack_unread() if mood == "slack" else None
+    if mood == "stressed":
+        w, h = EYE_W + 2, EYE_H + 4
+        gx, gy = random.randint(-1, 1), random.randint(-1, 1)   # trembling
+        if vitals:
+            auto = "CPU %d%%!" % vitals[0]
+    elif mood == "slack":
+        gx, gy = 9, -5                                          # eyeing the badge
+        if unread:
+            auto = "%s unread" % (unread[0] if unread[0] < 10 else "9+")
+    elif mood == "focus":
+        h, gx, gy = 22, 0, 2
+        auto = "focus %d min" % ((pomo.seconds_left() + 59) // 60)
+    elif mood == "break":
+        auto = "break time"
+    elif mood == "alert":
+        h, gx, gy = EYE_H + 4, 0, -3                            # wide and raised
+    elif mood == "confused":
+        gx, gy = (face_tick // 12 % 2) * 14 - 7, 0              # looking left and right
+    elif mood == "sleepy":
+        h, opened, gx, gy = 8, 1.0, 0, 8
+    if caption is None:
+        caption = auto
+
+    fb.fill(BLACK)
+    cy = EYE_Y + gy
+    for side in (-1, 1):
+        cx = W // 2 + side * EYE_DX + gx
+        if happy:                                   # an arch: a disc with its lower part cut away
+            fb.ellipse(cx, cy + 6, w // 2, 16, color, True)
+            fb.ellipse(cx, cy + 15, w // 2 + 2, 14, BLACK, True)
+            continue
+        eh = max(int(h * opened), 4)
+        if mood == "confused" and side > 0:
+            eh = max(eh * 5 // 9, 4)                # one eye narrowed
+        eye(cx, cy, w, eh, color)
+        if mood == "focus":                         # brows slanting down towards the middle
+            top, left = cy - eh // 2, cx - w // 2
+            for i in range(10):
+                cut = w * (10 - i) // 10
+                fb.hline(left + w - cut if side < 0 else left, top + i, cut, BLACK)
+    if mood == "stressed":                          # a sweat drop running down
+        fb.ellipse(W // 2 + EYE_DX + w // 2 + 9, 14 + face_tick % 14, 3, 4, SWEAT, True)
+    elif mood == "sleepy":                          # z z z drifting up
+        phase = (face_tick // 6) % 18
+        for k in range(3):
+            if phase >= k * 5:
+                fb.text("Z" if k == 2 else "z", 112 + k * 11, 26 - k * 9 - (phase % 5) // 2, STATUS)
+    elif unread:
+        fb.fill_rect(144, 2, 14, 14, WARN if unread[1] else SLACK)
+        fb.text(str(unread[0]) if unread[0] < 10 else "+", 147, 5, BLACK)
+    if line2:
+        centered(caption, 59, color)
+        centered(line2, 70, STATUS)
+    elif caption:
+        centered(caption, 68, STATUS)
+    show()
+
+
+def companion_spot():
+    # Where the small eyes go on the current screen and in what mood:
+    # (x, y, mood, colour), or None when they are not shown.
+    if reacting() or screen == CLOCK:
+        return None
+    mood = face_mood()
+    color = mood_color(mood)
+    if screen == AGENDA:
+        now = local_now()
+        if ongoing_event(now):
+            return 30, 1, mood, color               # between "NOW" and the end time
+        upcoming = upcoming_events(now)
+        if not upcoming:
+            return 68, 62, mood, color
+        nxt = upcoming[0]
+        if not nxt[2] and 0 < nxt[0] - now <= 600 and mood in ("idle", "sleepy"):
+            mood, color = "alert", AMBER            # next event is close
+        return 136, 32, mood, color                 # in the gap between the two events
+    if screen == POMODORO:
+        return 8, 0, mood, color                    # left of the title
+    if not vitals_fresh():
+        return 68, 66, mood, color
+    return 135, 7, mood, load_color(vitals[0])      # right of the bars, coloured by load
+
+
+def paint_companion(now):
+    # Draw the small eyes into the frame buffer; returns their box's corner, or None.
+    spot = companion_spot()
+    if spot is None:
+        return None
+    x, y, mood, color = spot
+    face_glance(now)
+    opened = 1.0 if mood == "sleepy" else face_openness(now, 240)
+    gx, gy = int(face_gaze[0] / 6), int(face_gaze[1] / 4)
+    h = 10
+    if mood == "stressed":
+        gx, gy = random.randint(-1, 1), random.randint(-1, 1)
+    elif mood == "focus":
+        h = 5
+    elif mood == "sleepy":
+        h, gx, gy = 2, 0, 1
+    elif mood == "alert":
+        gx, gy = 0, -1
+    wink = face_until(face_wink_until)
+    fb.fill_rect(x, y, MINI_W, MINI_H, BLACK)
+    for i, ex in enumerate((x + 1, x + 14)):
+        if mood == "break":                         # happy arches
+            fb.ellipse(ex + 4, y + 7, 4, 5, color, True)
+            fb.ellipse(ex + 4, y + 11, 5, 4, BLACK, True)
+            continue
+        eh = 2 if i and wink else max(2, int(h * opened + 0.5))
+        fb.fill_rect(ex + gx, y + 1 + gy + (10 - eh) // 2, 9, eh, color)
+    return x, y
+
+
+def companion_frame(now):
+    # Animate the small eyes without redrawing the rest of the screen.
+    at = paint_companion(now)
+    if at:
+        show_region(at[0], at[1], MINI_W, MINI_H)
+
+
+def announce_event(now):
+    # Pop up once when a timed event is five minutes (or less) away.
+    global event_announced
+    for start, end, all_day, title in cal_events:
+        if not all_day and 0 < start - now <= 300:
+            key = (start, title)
+            if key != event_announced:
+                event_announced = key
+                react("alert", "in %d min" % ((start - now + 59) // 60), 3500, title[:20])
+            return
+
+
 # ---- Main loop --------------------------------------------------------------
 
 CLOCK, AGENDA, POMODORO, VITALS = 0, 1, 2, 3
@@ -828,10 +1129,12 @@ flash_until = 0                     # backlight blinks until this tick
 
 def handle(event):
     # Apply a button event; returns True if the screen needs redrawing.
-    global screen, flash_until
+    global screen, flash_until, face_react_until, face_wink_until
     if event is None:
         return False
     flash_until = 0
+    face_react_until = None             # a press dismisses the pop-up face
+    face_wink_until = time.ticks_add(time.ticks_ms(), 400)
     if event == "short":
         # Clock and agenda count as one stop: they alternate by themselves.
         screen = {CLOCK: POMODORO, AGENDA: POMODORO, POMODORO: VITALS, VITALS: CLOCK}[screen]
@@ -851,8 +1154,10 @@ def main():
     btn = Button(button)
     drawn = None                    # what the display currently shows
     rotate_at = time.ticks_add(time.ticks_ms(), ROTATE_S * 1000)
-    rain_at = 0
+    rain_at = face_at = second_at = 0
     logged_minute = -1
+    mac_up = False
+    react("hello", "hello!", 3000)
     while True:
         sync_step()
         dirty = handle(btn.poll())
@@ -871,6 +1176,17 @@ def main():
             screen = POMODORO
             flash_until = time.ticks_add(time.ticks_ms(), 4000)
             dirty = True
+            if pomo.on_break:
+                react("break", "break time!", 3000)
+            else:
+                react("hello", "next round?", 3000)
+        if time.ticks_diff(now_ms, second_at) >= 1000:      # once a second
+            second_at = now_ms
+            announce_event(local_now())
+            fresh = vitals_fresh()
+            if mac_up and not fresh:
+                react("confused", "Mac?")
+            mac_up = fresh
 
         now_ms = time.ticks_ms()
         if flash_until and time.ticks_diff(flash_until, now_ms) > 0:
@@ -879,7 +1195,13 @@ def main():
             flash_until = 0
             backlight.duty_u16(65535)
 
-        if screen == CLOCK:
+        frame_due = time.ticks_diff(now_ms, face_at) >= FACE_FRAME_MS
+        if reacting():                              # the face has the screen for a moment
+            if frame_due:
+                face_at = now_ms
+                draw_face(now_ms)
+            drawn = None                            # redraw the real screen afterwards
+        elif screen == CLOCK:
             if dirty or drawn is None or drawn[0] != CLOCK or \
                     time.ticks_diff(now_ms, rain_at) >= RAIN_FRAME_MS:
                 rain_at = now_ms
@@ -890,22 +1212,23 @@ def main():
                 rain_step()
                 draw_clock(now)
                 drawn = (CLOCK,)
-        elif screen == AGENDA:
-            key = (AGENDA, time.localtime()[4], cal_version, cal_status)
-            if dirty or key != drawn:
-                draw_agenda()
-                drawn = key
-        elif screen == POMODORO:
-            key = (POMODORO, pomo.seconds_left(), pomo.running, pomo.on_break)
-            if dirty or key != drawn:
-                draw_pomodoro()
-                drawn = key
         else:
-            fresh = vitals_fresh()
-            key = (VITALS, fresh)
-            if dirty or new_sample or key != drawn:
-                draw_vitals()
+            if screen == AGENDA:
+                key = (AGENDA, time.localtime()[4], cal_version, cal_status)
+                draw = draw_agenda
+            elif screen == POMODORO:
+                key = (POMODORO, pomo.seconds_left(), pomo.running, pomo.on_break)
+                draw = draw_pomodoro
+            else:
+                key = (VITALS, vitals_fresh(), vitals_at)
+                draw = draw_vitals
+            if dirty or key != drawn:
+                draw()                              # full frame, small eyes included
                 drawn = key
+                face_at = now_ms
+            elif frame_due:
+                face_at = now_ms
+                companion_frame(now_ms)             # just the small eyes
         time.sleep_ms(10)
 
 
